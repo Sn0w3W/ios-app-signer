@@ -25,7 +25,9 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
     @IBOutlet var appVersion: NSTextField!
     @IBOutlet var ignorePluginsCheckbox: NSButton!
     @IBOutlet var noGetTaskAllowCheckbox: NSButton!
-
+    @IBOutlet var forceSign: NSButton!
+    @IBOutlet var lockAppId: NSButton!
+    
     
     //MARK: Variables
     var provisioningProfiles:[ProvisioningProfile] = []
@@ -38,6 +40,8 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
     @objc var NibLoaded = false
     var shouldCheckPlugins: Bool!
     var shouldSkipGetTaskAllow: Bool!
+    var shouldForceSign: Bool!
+    var skipAppIDCheck: Bool!
 
     //MARK: Constants
     let signableExtensions = ["dylib","so","0","vis","pvr","framework","appex","app"]
@@ -56,7 +60,7 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
 //    let plistbuddyPath = "/usr/libexec/plistbuddy"
     
     //MARK: Drag / Drop
-    static let urlFileTypes = ["ipa", "deb"]
+    static let urlFileTypes = ["ipa", "deb", "zip"]
     static let allowedFileTypes = urlFileTypes + ["app", "appex", "xcarchive"]
     static let fileTypes = allowedFileTypes + ["mobileprovision"]
     @objc var fileTypeIsOk = false
@@ -222,7 +226,7 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
         ProvisioningProfilesPopup.addItems(withTitles: [
             "Re-Sign Only",
             "Choose Custom File",
-            "––––––––––––––––––––––"
+            ""
         ])
         let formatter = DateFormatter()
         formatter.dateStyle = .short
@@ -303,6 +307,7 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
     }
     
     func checkProfileID(_ profile: ProvisioningProfile?){
+        skipAppIDCheck = lockAppId.state == .on
         if let profile = profile {
             self.profileFilename = profile.filename
             setStatus("Selected provisioning profile \(profile.appID)")
@@ -311,7 +316,7 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
                 setStatus("Provisioning profile expired")
                 chooseProvisioningProfile(ProvisioningProfilesPopup)
             }
-            if profile.appID.firstIndex(of: "*") == nil {
+            if profile.appID.firstIndex(of: "*") == nil && !skipAppIDCheck {
                 // Not a wildcard profile
                 NewApplicationIDTextField.stringValue = profile.appID
                 NewApplicationIDTextField.isEnabled = false
@@ -393,18 +398,23 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
     
     /// check if Mach-O file
     @objc func checkMachOFile(_ path: String) -> Bool {
-        if let file = FileHandle(forReadingAtPath: path) {
-            let data = file.readData(ofLength: 4)
-            file.closeFile()
-            var machOFile = data.elementsEqual([0xCE, 0xFA, 0xED, 0xFE]) || data.elementsEqual([0xCF, 0xFA, 0xED, 0xFE]) || data.elementsEqual([0xCA, 0xFE, 0xBA, 0xBE])
-            
-            if machOFile == false && signableExtensions.contains(path.lastPathComponent.pathExtension.lowercased()) {
-                Log.write("Detected binary by extension: \(path)")
-                machOFile = true
+        if shouldForceSign {
+            Log.write("Force signing: \(path)")
+            return true
+        } else {
+            if let file = FileHandle(forReadingAtPath: path) {
+                let data = file.readData(ofLength: 4)
+                file.closeFile()
+                var machOFile = data.elementsEqual([0xCE, 0xFA, 0xED, 0xFE]) || data.elementsEqual([0xCF, 0xFA, 0xED, 0xFE]) || data.elementsEqual([0xCA, 0xFE, 0xBA, 0xBE])
+
+                if machOFile == false && signableExtensions.contains(path.lastPathComponent.pathExtension.lowercased()) {
+                    Log.write("Detected binary by extension: \(path)")
+                    machOFile = true
+                }
+                return machOFile
             }
-            return machOFile
+          return false
         }
-        return false
     }
     
     func unzip(_ inputFile: String, outputPath: String)->AppSignerTaskOutput {
@@ -584,6 +594,7 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
             newVersion = self.appVersion.stringValue.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             shouldCheckPlugins = ignorePluginsCheckbox.state == .off
             shouldSkipGetTaskAllow = noGetTaskAllowCheckbox.state == .on
+            shouldForceSign = forceSign.state == .on
         }
 
         var provisioningFile = self.profileFilename
@@ -762,8 +773,8 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
                 cleanup(tempFolder); return
             }
             
-        case "ipa":
-            //MARK: --Unzip ipa
+        case "ipa", "zip":
+            //MARK: --Unzip ipa / zip
             do {
                 try fileManager.createDirectory(atPath: workingDirectory, withIntermediateDirectories: true, attributes: nil)
                 setStatus("Extracting ipa file")
@@ -870,7 +881,7 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
                             profile.removeGetTaskAllow()
                         }
                         let isWildcard = profile.appID == "*" // TODO: support com.example.* wildcard
-                        if !isWildcard && (newApplicationID != "" && newApplicationID != profile.appID) {
+                        if !isWildcard && (newApplicationID != "" && newApplicationID != profile.appID && !skipAppIDCheck) {
                             setStatus("Unable to change App ID to \(newApplicationID), provisioning profile won't allow it")
                             cleanup(tempFolder); return
                         } else if isWildcard {
